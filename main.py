@@ -80,6 +80,12 @@ Safety Notes:
     )
     
     parser.add_argument(
+        "--from-end",
+        action="store_true",
+        help="Start scanning from the end of the followers list (older followers first)",
+    )
+    
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -124,6 +130,7 @@ async def main_async(args: argparse.Namespace) -> int:
     logger.info(f"  User ID:     @{args.user_id}")
     logger.info(f"  Mode:        {'DRY RUN' if args.dry_run else 'LIVE'}")
     logger.info(f"  Limit:       {args.limit} followers")
+    logger.info(f"  From End:    {args.from_end}")
     logger.info(f"  Verbose:     {args.verbose}")
     logger.info(f"  Auto-confirm:{args.yes}")
     logger.info("=" * 50)
@@ -142,7 +149,8 @@ async def main_async(args: argparse.Namespace) -> int:
             report = await cleaner.run(
                 dry_run=args.dry_run,
                 limit=args.limit,
-                skip_confirmation=args.yes
+                skip_confirmation=args.yes,
+                from_end=args.from_end
             )
             
             # Return success if no errors

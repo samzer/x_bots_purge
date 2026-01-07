@@ -326,7 +326,8 @@ class TwitterCleaner:
         self, 
         dry_run: bool = False,
         limit: Optional[int] = None,
-        require_confirmation: bool = True
+        require_confirmation: bool = True,
+        from_end: bool = False
     ) -> int:
         """
         Scan followers and remove bots in batches as they're found.
@@ -336,11 +337,17 @@ class TwitterCleaner:
             dry_run: If True, only identify bots without removing
             limit: Maximum number of removals
             require_confirmation: If True, ask before first removal
+            from_end: If True, start from the end of the followers list
             
         Returns:
             Number of successfully removed followers
         """
-        self.logger.info("Starting batch scan and remove process...")
+        if from_end:
+            self.logger.info("Starting batch scan and remove process (FROM END)...")
+            self.logger.info("Scrolling to end of followers list first...")
+            await self._scroll_to_end_of_list()
+        else:
+            self.logger.info("Starting batch scan and remove process...")
         
         scroll_count = 0
         no_new_followers_count = 0
@@ -354,6 +361,10 @@ class TwitterCleaner:
             
             # Get all visible follower cells
             cells = await self.page.query_selector_all(SELECTORS["follower_cell"])
+            
+            # If from_end, process cells in reverse order
+            if from_end:
+                cells = list(reversed(cells))
             
             new_followers_found = 0
             batch_bots = []
@@ -426,8 +437,13 @@ class TwitterCleaner:
             else:
                 no_new_followers_count = 0
             
-            # Scroll down to load more
-            await self.page.evaluate("window.scrollBy(0, 600)")
+            # Scroll to load more (direction depends on from_end)
+            if from_end:
+                # Scroll up to load older followers (toward beginning)
+                await self.page.evaluate("window.scrollBy(0, -600)")
+            else:
+                # Scroll down to load more recent followers
+                await self.page.evaluate("window.scrollBy(0, 600)")
             await asyncio.sleep(DELAYS["after_scroll"])
             
             scroll_count += 1
@@ -439,6 +455,34 @@ class TwitterCleaner:
         )
         
         return self.removed_count
+
+    async def _scroll_to_end_of_list(self):
+        """Scroll to the end of the followers list."""
+        self.logger.info("Scrolling to end of list...")
+        
+        last_height = 0
+        same_height_count = 0
+        
+        while same_height_count < 5:
+            # Scroll to bottom
+            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(1.5)
+            
+            # Check for page errors
+            if await self._handle_page_error():
+                await asyncio.sleep(2)
+            
+            # Get new height
+            new_height = await self.page.evaluate("document.body.scrollHeight")
+            
+            if new_height == last_height:
+                same_height_count += 1
+            else:
+                same_height_count = 0
+                last_height = new_height
+                self.logger.debug(f"  Scrolling... (height: {new_height})")
+        
+        self.logger.info("✓ Reached end of followers list")
 
     async def _remove_follower_from_cell(self, cell, username: str) -> bool:
         """
@@ -868,7 +912,8 @@ class TwitterCleaner:
         self,
         dry_run: bool = False,
         limit: Optional[int] = None,
-        skip_confirmation: bool = False
+        skip_confirmation: bool = False,
+        from_end: bool = False
     ) -> CleanupReport:
         """
         Run the full cleanup process using batch scan-and-remove approach.
@@ -877,6 +922,7 @@ class TwitterCleaner:
             dry_run: If True, identify bots without removing them
             limit: Maximum number of followers to process/remove
             skip_confirmation: If True, skip confirmation prompts
+            from_end: If True, start from the end of the followers list
             
         Returns:
             CleanupReport with results
@@ -904,7 +950,8 @@ class TwitterCleaner:
             await self.scan_and_remove_in_batches(
                 dry_run=dry_run,
                 limit=limit,
-                require_confirmation=not skip_confirmation
+                require_confirmation=not skip_confirmation,
+                from_end=from_end
             )
             
             # Update final stats
