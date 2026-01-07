@@ -246,7 +246,7 @@ class TwitterCleaner:
     
     async def scroll_and_collect_followers(self, limit: Optional[int] = None) -> List[FollowerInfo]:
         """
-        Scroll through followers list and collect follower information.
+        Scroll through followers list and collect follower information (scan-only mode).
         
         Args:
             limit: Maximum number of followers to collect
@@ -321,6 +321,193 @@ class TwitterCleaner:
         
         self.logger.info(f"✓ Scan complete: {len(self.followers)} followers, {sum(1 for f in self.followers if f.is_bot)} bots identified")
         return self.followers
+
+    async def scan_and_remove_in_batches(
+        self, 
+        dry_run: bool = False,
+        limit: Optional[int] = None,
+        require_confirmation: bool = True
+    ) -> int:
+        """
+        Scan followers and remove bots in batches as they're found.
+        This is more efficient as bots are removed while still visible.
+        
+        Args:
+            dry_run: If True, only identify bots without removing
+            limit: Maximum number of removals
+            require_confirmation: If True, ask before first removal
+            
+        Returns:
+            Number of successfully removed followers
+        """
+        self.logger.info("Starting batch scan and remove process...")
+        
+        scroll_count = 0
+        no_new_followers_count = 0
+        removal_limit = limit or LIMITS["max_removals_per_session"]
+        first_removal = True
+        
+        while scroll_count < LIMITS["max_scroll_attempts"]:
+            # Check for page errors
+            if await self._handle_page_error():
+                await asyncio.sleep(2)
+            
+            # Get all visible follower cells
+            cells = await self.page.query_selector_all(SELECTORS["follower_cell"])
+            
+            new_followers_found = 0
+            batch_bots = []
+            
+            # Scan visible cells
+            for cell in cells:
+                follower = await self._extract_follower_info(cell)
+                
+                if follower and follower.username not in self.scanned_usernames:
+                    self.scanned_usernames.add(follower.username)
+                    self.followers.append(follower)
+                    new_followers_found += 1
+                    
+                    if follower.is_bot:
+                        self.logger.info(f"  🤖 Bot detected: @{follower.username} - {follower.bot_reason}")
+                        batch_bots.append((follower, cell))
+                    elif self.verbose:
+                        self.logger.debug(f"  ✓ Scanned: @{follower.username}")
+            
+            # Process bot removals for this batch
+            if batch_bots and not dry_run:
+                # First time confirmation
+                if first_removal and require_confirmation:
+                    bot_count = len([f for f in self.followers if f.is_bot])
+                    print(f"\n  Found {bot_count} bots so far. First batch has {len(batch_bots)} bots.")
+                    if not confirm_action("Start removing bots as they're found?"):
+                        self.logger.info("Removal cancelled - continuing in dry-run mode")
+                        dry_run = True
+                    else:
+                        first_removal = False
+                
+                if not dry_run:
+                    for follower, cell in batch_bots:
+                        if self.removed_count >= removal_limit:
+                            self.logger.info(f"Reached removal limit of {removal_limit}")
+                            break
+                        
+                        self.logger.info(f"  Removing @{follower.username}...")
+                        success = await self._remove_follower_from_cell(cell, follower.username)
+                        
+                        if success:
+                            follower.removed = True
+                            self.removed_count += 1
+                            self.logger.info(f"  ✓ Removed @{follower.username} ({self.removed_count}/{removal_limit})")
+                        else:
+                            follower.removal_error = "Failed to remove"
+                            self.failed_count += 1
+                            self.logger.warning(f"  ✗ Failed to remove @{follower.username}")
+                        
+                        await asyncio.sleep(DELAYS["between_removals"])
+            
+            # Check if reached removal limit
+            if self.removed_count >= removal_limit:
+                self.logger.info(f"Reached removal limit of {removal_limit}")
+                break
+            
+            # Update progress
+            bot_count = sum(1 for f in self.followers if f.is_bot)
+            self.logger.info(
+                f"Progress: {len(self.followers)} scanned, {bot_count} bots, "
+                f"{self.removed_count} removed, {self.failed_count} failed"
+            )
+            
+            # Check if we found any new followers
+            if new_followers_found == 0:
+                no_new_followers_count += 1
+                if no_new_followers_count >= 3:
+                    self.logger.info("No more followers to load")
+                    break
+            else:
+                no_new_followers_count = 0
+            
+            # Scroll down to load more
+            await self.page.evaluate("window.scrollBy(0, 600)")
+            await asyncio.sleep(DELAYS["after_scroll"])
+            
+            scroll_count += 1
+        
+        self.logger.info(
+            f"✓ Complete: {len(self.followers)} scanned, "
+            f"{sum(1 for f in self.followers if f.is_bot)} bots identified, "
+            f"{self.removed_count} removed, {self.failed_count} failed"
+        )
+        
+        return self.removed_count
+
+    async def _remove_follower_from_cell(self, cell, username: str) -> bool:
+        """
+        Remove a follower directly from their cell element (while visible).
+        
+        Args:
+            cell: The UserCell element handle
+            username: Username for logging
+            
+        Returns:
+            True if removal successful, False otherwise
+        """
+        try:
+            # Scroll cell into view
+            await cell.scroll_into_view_if_needed()
+            await asyncio.sleep(0.3)
+            
+            # Try multiple selectors for the menu button
+            more_btn = None
+            menu_selectors = [
+                '[data-testid="caret"]',
+                '[aria-label="More"]',
+                '[data-testid="userActions"]',
+                'button[aria-haspopup="menu"]',
+            ]
+            
+            for selector in menu_selectors:
+                more_btn = await cell.query_selector(selector)
+                if more_btn:
+                    break
+            
+            # Fallback: find any button with "more" in aria-label
+            if not more_btn:
+                buttons = await cell.query_selector_all('button')
+                for btn in buttons:
+                    aria_label = await btn.get_attribute('aria-label')
+                    if aria_label and 'more' in aria_label.lower():
+                        more_btn = btn
+                        break
+            
+            if not more_btn:
+                self.logger.debug(f"Could not find menu button for @{username}")
+                return False
+            
+            await more_btn.click()
+            await asyncio.sleep(DELAYS["menu_animation"])
+            
+            # Find and click "Remove follower" option
+            remove_btn = await self._find_remove_button()
+            if not remove_btn:
+                await self.page.keyboard.press("Escape")
+                self.logger.debug(f"Could not find remove option for @{username}")
+                return False
+            
+            await remove_btn.click()
+            await asyncio.sleep(DELAYS["menu_animation"])
+            
+            # Handle confirmation dialog
+            await self._handle_confirmation_dialog()
+            
+            return True
+            
+        except Exception as e:
+            self.logger.debug(f"Error removing @{username}: {e}")
+            try:
+                await self.page.keyboard.press("Escape")
+            except:
+                pass
+            return False
     
     async def _extract_follower_info(self, cell) -> Optional[FollowerInfo]:
         """
@@ -684,7 +871,7 @@ class TwitterCleaner:
         skip_confirmation: bool = False
     ) -> CleanupReport:
         """
-        Run the full cleanup process.
+        Run the full cleanup process using batch scan-and-remove approach.
         
         Args:
             dry_run: If True, identify bots without removing them
@@ -712,21 +899,17 @@ class TwitterCleaner:
             if not await self.navigate_to_followers():
                 raise RuntimeError("Failed to navigate to followers page")
             
-            # Step 3: Scan and collect followers
-            await self.scroll_and_collect_followers(limit=limit)
-            
-            # Update report
-            self.report.total_followers_scanned = len(self.followers)
-            self.report.bot_accounts_identified = sum(1 for f in self.followers if f.is_bot)
-            
-            # Step 4: Process bot removals
-            await self.process_bot_removals(
+            # Step 3: Scan and remove in batches (more efficient!)
+            # This scans visible followers and removes bots while they're still on screen
+            await self.scan_and_remove_in_batches(
                 dry_run=dry_run,
                 limit=limit,
                 require_confirmation=not skip_confirmation
             )
             
             # Update final stats
+            self.report.total_followers_scanned = len(self.followers)
+            self.report.bot_accounts_identified = sum(1 for f in self.followers if f.is_bot)
             self.report.successfully_removed = self.removed_count
             self.report.failed_removals = self.failed_count
             self.report.followers = [asdict(f) for f in self.followers]
