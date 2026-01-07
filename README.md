@@ -1,6 +1,6 @@
 # 🧹 Twitter Follower Cleanup Tool
 
-Automate the removal of suspected bot followers from your Twitter/X account. The tool identifies potential bot accounts (usernames ending with 3+ consecutive digits) and removes them as followers.
+Automate the removal of suspected bot followers from your Twitter/X account. The tool identifies potential bot accounts (usernames ending with 5+ consecutive digits) and removes them as followers.
 
 ## Features
 
