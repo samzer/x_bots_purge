@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific - sensitive/generated data
+browser_data/
+reports/
+backups/
+screenshots/
+*.log
+
+# Playwright
+playwright-report/
+test-results/
+
