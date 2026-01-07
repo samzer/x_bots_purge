@@ -175,25 +175,73 @@ class TwitterCleaner:
         url = URLS["followers_template"].format(user_id=self.user_id)
         self.logger.info(f"Navigating to followers page: {url}")
         
+        for attempt in range(LIMITS["max_retry_attempts"]):
+            try:
+                # Use domcontentloaded - networkidle is too strict for Twitter
+                await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                await asyncio.sleep(DELAYS["page_load"])
+                
+                # Check for error state and retry
+                if await self._handle_page_error():
+                    self.logger.info("Handled page error, waiting for content...")
+                    await asyncio.sleep(3)
+                
+                # Wait for follower cells to appear
+                await self.page.wait_for_selector(
+                    SELECTORS["follower_cell"], 
+                    timeout=15000
+                )
+                
+                self.logger.info("✓ Followers page loaded successfully")
+                return True
+                
+            except PlaywrightTimeout:
+                self.logger.warning(f"Timeout loading followers (attempt {attempt + 1})")
+                if attempt < LIMITS["max_retry_attempts"] - 1:
+                    await self._handle_page_error()
+                    await asyncio.sleep(2)
+            except Exception as e:
+                self.logger.error(f"Failed to navigate to followers: {e}")
+                if attempt < LIMITS["max_retry_attempts"] - 1:
+                    await asyncio.sleep(2)
+        
+        self.logger.error("Failed to load followers page after retries")
+        return False
+    
+    async def _handle_page_error(self) -> bool:
+        """
+        Check for and handle Twitter page errors like 'Something went wrong'.
+        
+        Returns:
+            True if error was found and retry clicked, False otherwise
+        """
         try:
-            # Use domcontentloaded - networkidle is too strict for Twitter
-            await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await asyncio.sleep(DELAYS["page_load"])
+            # Look for retry button
+            retry_btn = await self.page.query_selector('button:has-text("Retry")')
+            if retry_btn:
+                self.logger.info("Found 'Retry' button - clicking...")
+                await retry_btn.click()
+                await asyncio.sleep(3)
+                return True
             
-            # Wait for follower cells to appear
-            await self.page.wait_for_selector(
-                SELECTORS["follower_cell"], 
-                timeout=15000
-            )
-            
-            self.logger.info("✓ Followers page loaded successfully")
-            return True
-            
-        except PlaywrightTimeout:
-            self.logger.error("Failed to load followers page - timeout")
+            # Alternative: look for error text
+            error_text = await self.page.query_selector('text="Something went wrong"')
+            if error_text:
+                # Try to find and click any retry-like button
+                retry = await self.page.query_selector('[role="button"]:has-text("Retry")')
+                if retry:
+                    await retry.click()
+                    await asyncio.sleep(3)
+                    return True
+                # Otherwise just reload
+                self.logger.info("Error detected - reloading page...")
+                await self.page.reload()
+                await asyncio.sleep(3)
+                return True
+                
             return False
         except Exception as e:
-            self.logger.error(f"Failed to navigate to followers: {e}")
+            self.logger.debug(f"Error handling page error: {e}")
             return False
     
     async def scroll_and_collect_followers(self, limit: Optional[int] = None) -> List[FollowerInfo]:
@@ -319,7 +367,7 @@ class TwitterCleaner:
             self.logger.debug(f"Failed to extract follower info: {e}")
             return None
     
-    async def _find_user_cell(self, username: str, max_scrolls: int = 10) -> Optional[any]:
+    async def _find_user_cell(self, username: str, max_scrolls: int = 15) -> Optional[any]:
         """
         Find a user cell by scrolling through the page.
         
@@ -332,8 +380,21 @@ class TwitterCleaner:
         """
         username_lower = username.lower()
         
+        # First scroll to top
+        await self.page.evaluate("window.scrollTo(0, 0)")
+        await asyncio.sleep(0.5)
+        
         for scroll_attempt in range(max_scrolls):
+            # Check for page errors first
+            if await self._handle_page_error():
+                await asyncio.sleep(2)
+            
             cells = await self.page.query_selector_all(SELECTORS["follower_cell"])
+            
+            if not cells:
+                # No cells found - might be loading or error
+                await asyncio.sleep(1)
+                continue
             
             for cell in cells:
                 try:
@@ -343,14 +404,14 @@ class TwitterCleaner:
                         if href and href.strip("/").split("/")[0].lower() == username_lower:
                             # Scroll element into view
                             await cell.scroll_into_view_if_needed()
-                            await asyncio.sleep(0.3)
+                            await asyncio.sleep(0.5)
                             return cell
                 except Exception:
                     continue
             
             # Scroll down to load more
-            await self.page.evaluate("window.scrollBy(0, 500)")
-            await asyncio.sleep(0.5)
+            await self.page.evaluate("window.scrollBy(0, 400)")
+            await asyncio.sleep(0.8)
         
         return None
 
@@ -540,7 +601,9 @@ class TwitterCleaner:
         
         # Re-navigate to followers page and scroll to top to start fresh
         self.logger.info("Refreshing followers page before removal...")
-        await self.navigate_to_followers()
+        if not await self.navigate_to_followers():
+            self.logger.error("Could not load followers page for removal")
+            return 0
         await self.page.evaluate("window.scrollTo(0, 0)")
         await asyncio.sleep(1)
         
@@ -549,9 +612,15 @@ class TwitterCleaner:
         
         removed = 0
         failed = 0
+        consecutive_failures = 0
         
         for i, bot in enumerate(bots_to_process, 1):
             self.logger.info(f"[{i}/{len(bots_to_process)}] Processing @{bot.username}")
+            
+            # Check for page errors before each removal
+            if await self._handle_page_error():
+                self.logger.info("Recovered from page error, continuing...")
+                await asyncio.sleep(2)
             
             success = await self.remove_follower(bot.username)
             
@@ -559,10 +628,18 @@ class TwitterCleaner:
                 bot.removed = True
                 removed += 1
                 self.removed_count += 1
+                consecutive_failures = 0
             else:
                 bot.removal_error = "Failed to remove"
                 failed += 1
                 self.failed_count += 1
+                consecutive_failures += 1
+                
+                # If too many consecutive failures, refresh the page
+                if consecutive_failures >= 5:
+                    self.logger.warning("Multiple consecutive failures - refreshing page...")
+                    await self.navigate_to_followers()
+                    consecutive_failures = 0
             
             # Progress update
             if i % LIMITS["batch_size"] == 0:
