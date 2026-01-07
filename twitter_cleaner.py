@@ -67,21 +67,33 @@ class TwitterCleaner:
     
     async def initialize_browser(self):
         """Initialize Playwright browser with persistent context."""
-        self.logger.info("Initializing browser...")
+        self.logger.info("Initializing browser (fullscreen mode)...")
         
         self.playwright = await async_playwright().start()
         
+        # Browser args for maximized/fullscreen
+        browser_args = [
+            '--disable-blink-features=AutomationControlled',
+            '--no-sandbox',
+            '--start-maximized',
+        ]
+        
+        # Build context options
+        context_options = {
+            "user_data_dir": BROWSER_CONFIG["user_data_dir"],
+            "headless": False,  # Always start non-headless for login
+            "slow_mo": BROWSER_CONFIG["slow_mo"],
+            "args": browser_args,
+        }
+        
+        # Use no_viewport for fullscreen (viewport fills entire window)
+        if BROWSER_CONFIG.get("start_maximized", True):
+            context_options["no_viewport"] = True
+        elif BROWSER_CONFIG.get("viewport"):
+            context_options["viewport"] = BROWSER_CONFIG["viewport"]
+        
         # Use persistent context to maintain login session
-        self.context = await self.playwright.chromium.launch_persistent_context(
-            user_data_dir=BROWSER_CONFIG["user_data_dir"],
-            headless=False,  # Always start non-headless for login
-            slow_mo=BROWSER_CONFIG["slow_mo"],
-            viewport=BROWSER_CONFIG["viewport"],
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-            ]
-        )
+        self.context = await self.playwright.chromium.launch_persistent_context(**context_options)
         
         # Get or create page
         if self.context.pages:
@@ -89,7 +101,7 @@ class TwitterCleaner:
         else:
             self.page = await self.context.new_page()
         
-        self.logger.info("Browser initialized successfully")
+        self.logger.info("Browser initialized successfully (fullscreen)")
     
     async def cleanup(self):
         """Clean up browser resources."""

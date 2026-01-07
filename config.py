@@ -9,8 +9,9 @@ Update selectors here as Twitter's DOM structure changes.
 BROWSER_CONFIG = {
     "headless": False,
     "slow_mo": 100,  # milliseconds between actions
-    "viewport": {"width": 1280, "height": 720},
+    "viewport": None,  # None = use full screen size
     "user_data_dir": "./browser_data",  # Persistent session storage
+    "start_maximized": True,  # Start browser maximized
 }
 
 # =============================================================================
@@ -31,7 +32,7 @@ DELAYS = {
 LIMITS = {
     "max_removals_per_session": 1000,
     "max_retry_attempts": 3,
-    "max_scroll_attempts": 50,  # prevent infinite scrolling
+    "max_scroll_attempts": 150,  # prevent infinite scrolling
     "batch_size": 10,  # followers to process before brief pause
 }
 
