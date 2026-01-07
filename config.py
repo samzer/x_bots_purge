@@ -29,7 +29,7 @@ DELAYS = {
 # LIMITS & SAFETY
 # =============================================================================
 LIMITS = {
-    "max_removals_per_session": 100,
+    "max_removals_per_session": 1000,
     "max_retry_attempts": 3,
     "max_scroll_attempts": 50,  # prevent infinite scrolling
     "batch_size": 10,  # followers to process before brief pause
@@ -85,11 +85,19 @@ URLS = {
 # =============================================================================
 BOT_DETECTION = {
     # Usernames ending with 3+ consecutive digits
-    "digit_suffix_pattern": r".*\d{3,}$",
+    "digit_suffix_pattern": r".*\d{5,}$",
     # Optional: Additional patterns can be added here
     "suspicious_patterns": [
-        r"^[a-z]+\d{8}$",  # lowercase letters followed by 8 digits
-        r"^\w+_\d{5,}$",   # word characters, underscore, 5+ digits
+        r"^[a-z]+\d{8}$",                  # lowercase letters followed by 8 digits
+        r"^\w+_\d{5,}$",                   # word characters, underscore, 5+ digits
+        r"\d{6,}$",                        # ends with 6+ digits
+        r"^\d{8,}$",                       # all digits, length 8+
+        r"^(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{12,}$",  # 12+ hex chars with at least one letter and digit
+        r"(\d{2,})\1{2,}",                 # a digit group (2+ digits) immediately repeated 2+ times (chunk repetition)
+        r"(\d)\1{4,}",                     # same digit 5+ times in a row
+        r"^(?=(?:.*\d){6,}).*$",           # 6+ digits anywhere
+        r"^[a-zA-Z]\d{6,}$",               # letter then 6+ digits
+        r"_[12]\d{3}$",                    # underscore, year-like suffix
     ],
 }
 

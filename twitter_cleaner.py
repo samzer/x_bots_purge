@@ -319,6 +319,41 @@ class TwitterCleaner:
             self.logger.debug(f"Failed to extract follower info: {e}")
             return None
     
+    async def _find_user_cell(self, username: str, max_scrolls: int = 10) -> Optional[any]:
+        """
+        Find a user cell by scrolling through the page.
+        
+        Args:
+            username: Twitter username to find
+            max_scrolls: Maximum scroll attempts
+            
+        Returns:
+            Element handle for the user cell, or None
+        """
+        username_lower = username.lower()
+        
+        for scroll_attempt in range(max_scrolls):
+            cells = await self.page.query_selector_all(SELECTORS["follower_cell"])
+            
+            for cell in cells:
+                try:
+                    link = await cell.query_selector(SELECTORS["user_name_link"])
+                    if link:
+                        href = await link.get_attribute("href")
+                        if href and href.strip("/").split("/")[0].lower() == username_lower:
+                            # Scroll element into view
+                            await cell.scroll_into_view_if_needed()
+                            await asyncio.sleep(0.3)
+                            return cell
+                except Exception:
+                    continue
+            
+            # Scroll down to load more
+            await self.page.evaluate("window.scrollBy(0, 500)")
+            await asyncio.sleep(0.5)
+        
+        return None
+
     async def remove_follower(self, username: str) -> bool:
         """
         Remove a specific follower.
@@ -333,27 +368,43 @@ class TwitterCleaner:
         
         for attempt in range(LIMITS["max_retry_attempts"]):
             try:
-                # Find the follower cell
-                cells = await self.page.query_selector_all(SELECTORS["follower_cell"])
-                target_cell = None
-                
-                for cell in cells:
-                    link = await cell.query_selector(SELECTORS["user_name_link"])
-                    if link:
-                        href = await link.get_attribute("href")
-                        if href and href.strip("/").split("/")[0].lower() == username.lower():
-                            target_cell = cell
-                            break
+                # Find the user cell (with scrolling)
+                target_cell = await self._find_user_cell(username)
                 
                 if not target_cell:
-                    # Try scrolling to find the user
-                    self.logger.warning(f"Could not find @{username} in current view")
+                    self.logger.warning(f"Could not find @{username} after scrolling")
                     return False
                 
-                # Click the more menu button (three dots)
-                more_btn = await target_cell.query_selector(SELECTORS["more_menu_button"])
+                # Try multiple selectors for the menu button
+                more_btn = None
+                menu_selectors = [
+                    '[data-testid="caret"]',
+                    '[aria-label="More"]',
+                    '[data-testid="userActions"]',
+                    'button[aria-haspopup="menu"]',
+                    '[role="button"][aria-haspopup="menu"]',
+                ]
+                
+                for selector in menu_selectors:
+                    more_btn = await target_cell.query_selector(selector)
+                    if more_btn:
+                        self.logger.debug(f"Found menu button with selector: {selector}")
+                        break
+                
+                if not more_btn:
+                    # Try finding any button in the cell
+                    buttons = await target_cell.query_selector_all('button')
+                    for btn in buttons:
+                        aria_label = await btn.get_attribute('aria-label')
+                        if aria_label and 'more' in aria_label.lower():
+                            more_btn = btn
+                            break
+                
                 if not more_btn:
                     self.logger.warning(f"Could not find menu button for @{username}")
+                    if attempt < LIMITS["max_retry_attempts"] - 1:
+                        await asyncio.sleep(1)
+                        continue
                     return False
                 
                 await more_btn.click()
@@ -486,6 +537,12 @@ class TwitterCleaner:
             if not confirm_action(f"\nProceed with removing {len(bots_to_process)} bot followers?"):
                 self.logger.info("Removal cancelled by user")
                 return 0
+        
+        # Re-navigate to followers page and scroll to top to start fresh
+        self.logger.info("Refreshing followers page before removal...")
+        await self.navigate_to_followers()
+        await self.page.evaluate("window.scrollTo(0, 0)")
+        await asyncio.sleep(1)
         
         # Process removals
         self.logger.info(f"Starting removal of {len(bots_to_process)} bot followers...")

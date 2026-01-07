@@ -125,7 +125,7 @@ def is_bot_username(username: str) -> tuple[bool, str]:
     """
     # Primary check: 3+ digits at end
     if re.match(BOT_DETECTION["digit_suffix_pattern"], username):
-        return True, "Username ends with 3+ consecutive digits"
+        return True, "Username ends with 5+ consecutive digits"
     
     # Additional suspicious patterns
     for pattern in BOT_DETECTION.get("suspicious_patterns", []):
