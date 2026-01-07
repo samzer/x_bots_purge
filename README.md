@@ -2,6 +2,12 @@
 
 Automate the removal of suspected bot followers from your Twitter/X account. The tool identifies potential bot accounts (usernames ending with 5+ consecutive digits) and removes them as followers.
 
+## 📺 Demo Video
+
+[![Watch the demo](https://img.youtube.com/vi/cpUto_9b8Pg/maxresdefault.jpg)](https://www.youtube.com/watch?v=cpUto_9b8Pg)
+
+> 👆 Click the image above to watch the tool in action!
+
 ## Features
 
 - **Bot Detection**: Identifies accounts with usernames ending in 3+ digits (common bot pattern)
